@@ -534,6 +534,10 @@ During any given navigation, the {{AppHistory}} object needs to keep track of th
       <td>Until all promises passed to {{AppHistoryNavigateEvent/transitionWhile()}} have settled
       <td>So that if the navigation is canceled, we can [=AbortSignal/signal abort=].
     <tr>
+      <td>Whether a new element was <a spec="HTML" lt="focusing steps">focused</a>
+      <td>Until all promises passed to {{AppHistoryNavigateEvent/transitionWhile()}} have settled
+      <td>So that if one was, focus is not [=potentially reset the focus|reset=]
+    <tr>
       <td>The {{AppHistoryEntry}} being navigated to
       <td>From when it is determined, until all promises passed to {{AppHistoryNavigateEvent/transitionWhile()}} have settled
       <td>So that we know what to [=resolve=] any {{AppHistoryResult/committed}} and {{AppHistoryResult/finished}} promises with.
@@ -568,11 +572,15 @@ During any given navigation, the {{AppHistory}} object needs to keep track of th
     <tr>
       <td>Any {{AppHistoryNavigationOptions/info}}
       <td>Until the task is queued to fire the {{AppHistory/navigate}} event
-      <td>So that we can use it to fire the {{AppHistory/navigate}} event after the the trip through the [=traversable navigable/session history traversal queue=].
+      <td>So that we can use it to fire the {{AppHistory/navigate}} event after the trip through the [=traversable navigable/session history traversal queue=].
     <tr>
       <td>Any {{AppHistoryResult/committed}} {{Promise}} that was returned
       <td>Until the [=session history=] is updated (inside that same task)
       <td>So that we can [=resolve=] or [=reject=] it appropriately.
+    <tr>
+      <td>Whether {{AppHistoryNavigateEvent/transitionWhile()}} was called
+      <td>Until the [=session history=] is updated (inside that same task)
+      <td>So that we can suppress the normal scroll restoration logic in favor of the chosen {{AppHistoryTransitionWhileOptions/scrollRestoration}} option value.
 </table>
 
 Furthermore, we need to account for the fact that there might be multiple traversals queued up, e.g. via
@@ -602,6 +610,10 @@ Each {{AppHistory}} object has an associated <dfn for="AppHistory">ongoing navig
 
 Each {{AppHistory}} object has an associated <dfn for="AppHistory">ongoing navigation signal</dfn>, which is an {{AbortSignal}} or null, initially null.
 
+Each {{AppHistory}} object has an associated <dfn for="AppHistory">focus changed during ongoing navigation</dfn>, which is a boolean, initially false.
+
+Each {{AppHistory}} object has an associated <dfn for="AppHistory">suppress normal scroll restoration during ongoing navigation</dfn>, which is a boolean, initially false.
+
 Each {{AppHistory}} object has an associated <dfn for="AppHistory">ongoing navigation</dfn>, which is an [=app history API navigation=] or null, initially null.
 
 Each {{AppHistory}} object has an associated <dfn for="AppHistory">upcoming non-traverse navigation</dfn>, which is an [=app history API navigation=] or null, initially null.
@@ -618,7 +630,7 @@ An <dfn>app history API navigation</dfn> is a [=struct=] with the following [=st
 * A <dfn for="app history API navigation">committed promise</dfn>, a {{Promise}}
 * A <dfn for="app history API navigation">finished promise</dfn>, a {{Promise}}
 
-<p class="note">We need to store the [=AppHistory/ongoing navigation signal=] separately from the [=app history API navigation=] struct, since it needs to be tracked even for navigations that are not via the app history APIs.
+<p class="note">We need to store the [=AppHistory/ongoing navigation signal=], [=AppHistory/focus changed during ongoing navigation=], and [=AppHistory/suppress normal scroll restoration during ongoing navigation=] separately from the [=app history API navigation=] struct, since they need to be tracked even for navigations that are not via the app history APIs.
 
 <div algorithm>
   To <dfn for="AppHistory">set the upcoming non-traverse navigation</dfn> given an {{AppHistory}} |appHistory|, a JavaScript value |info|, and a [=serialized state=]-or-null |serializedState|:
@@ -1028,7 +1040,8 @@ interface AppHistoryNavigateEvent : Event {
   readonly attribute FormData? formData;
   readonly attribute any info;
 
-  undefined transitionWhile(Promise<undefined> newNavigationAction);
+  undefined transitionWhile(Promise<undefined> newNavigationAction,
+                            optional AppHistoryTransitionWhileOptions options = {});
 };
 
 dictionary AppHistoryNavigateEventInit : EventInit {
@@ -1040,6 +1053,21 @@ dictionary AppHistoryNavigateEventInit : EventInit {
   required AbortSignal signal;
   FormData? formData = null;
   any info;
+};
+
+dictionary AppHistoryTransitionWhileOptions {
+  AppHistoryFocusReset focusReset;
+  AppHistoryScrollRestoration scrollRestoration;
+};
+
+enum AppHistoryFocusReset {
+  "after-transition",
+  "manual"
+};
+
+enum AppHistoryScrollRestoration {
+  "after-transition",
+  "manual"
 };
 
 enum AppHistoryNavigationType {
@@ -1097,10 +1125,16 @@ enum AppHistoryNavigationType {
   </dd>
 
   <dt><code><var ignore>event</var>.{{AppHistoryNavigateEvent/transitionWhile()|transitionWhile}}(|newNavigationAction|)</code>
+  <dt><code><var ignore>event</var>.{{AppHistoryNavigateEvent/transitionWhile()|transitionWhile}}(|newNavigationAction|, { {{AppHistoryTransitionWhileOptions/focusReset}}: "{{AppHistoryFocusReset/manual}}" })</code>
+  <dt><code><var ignore>event</var>.{{AppHistoryNavigateEvent/transitionWhile()|transitionWhile}}(|newNavigationAction|, { {{AppHistoryTransitionWhileOptions/scrollRestoration}}: "{{AppHistoryScrollRestoration/manual}}" })</code>
   <dd>
-    <p>Synchronously converts this navigation into a same-document navigation to the destination URL.
+    <p>Converts this navigation into a same-document navigation to the destination URL.
 
     <p>The given |newNavigationAction| promise is used to signal the duration, and success or failure, of the navigation. After it settles, the browser signals to the user (e.g. via a loading spinner UI, or assistive technology) that the navigation is finished. Additionally, it fires {{AppHistory/navigatesuccess}} or {{AppHistory/navigateerror}} events as appropriate, which other parts of the web application can respond to.
+
+    <p>By default, using this method will cause focus to reset when the |newNavigationAction| promise (and any other promises passed in other calls to {{AppHistoryNavigateEvent/transitionWhile()}}) settle. Focus will be reset to the first element with the <{html-global/autofocus}> attribute set, or the <{body}> element if the attribute isn't present. The {{AppHistoryTransitionWhileOptions/focusReset}} option can be set to "{{AppHistoryFocusReset/manual}}" to avoid this behavior.
+
+    <p>By default, using this method for "{{AppHistoryNavigationType/traverse}}" navigations will cause the browser's scroll restoration logic to be delayed until the |newNavigationAction| promise (and any other promises passed in other calls to {{AppHistoryNavigateEvent/transitionWhile()}}) settle. The {{AppHistoryTransitionWhileOptions/scrollRestoration}} option can be set to "{{AppHistoryScrollRestoration/manual}}" to turn off scroll restoration entirely for this navigation.
 
     <p>This method will throw a "{{SecurityError}}" {{DOMException}} if {{AppHistoryNavigateEvent/canTransition}} is false, or if {{Event/isTrusted}} is false. It will throw an "{{InvalidStateError}}" {{DOMException}} if not called synchronously, during event dispatch.
   </dd>
@@ -1108,16 +1142,16 @@ enum AppHistoryNavigationType {
 
 The <dfn attribute for="AppHistoryNavigateEvent">navigationType</dfn>, <dfn attribute for="AppHistoryNavigateEvent">destination</dfn>, <dfn attribute for="AppHistoryNavigateEvent">canTransition</dfn>, <dfn attribute for="AppHistoryNavigateEvent">userInitiated</dfn>, <dfn attribute for="AppHistoryNavigateEvent">hashChange</dfn>, <dfn attribute for="AppHistoryNavigateEvent">signal</dfn>, <dfn attribute for="AppHistoryNavigateEvent">formData</dfn>, and <dfn attribute for="AppHistoryNavigateEvent">info</dfn> getter steps are to return the value that the corresponding attribute was initialized to.
 
-An {{AppHistoryNavigateEvent}} has the following associated values which are only conditionally used:
+An {{AppHistoryNavigateEvent}} has a <dfn for="AppHistoryNavigateEvent">classic history API serialized data</dfn>, a [=serialized state=]-or-null. It is only used in some cases where the event's {{AppHistoryNavigateEvent/navigationType}} is "{{AppHistoryNavigationType/push}}" or "{{AppHistoryNavigationType/replace}}", and is set appropriately when the event is [[#navigate-event-firing|fired]].
 
-* <dfn for="AppHistoryNavigateEvent">classic history API serialized data</dfn>, a [=serialized state=]-or-null, used in some cases when its {{AppHistoryNavigateEvent/navigationType}} is "{{AppHistoryNavigationType/push}}" or "{{AppHistoryNavigationType/replace}}"
+An {{AppHistoryNavigateEvent}} has a <dfn for="AppHistoryNavigateEvent">focus reset behavior</dfn>, an {{AppHistoryFocusReset}}-or-null, initially null.
 
-This is set appropriately when the event is [[#navigate-event-firing|fired]].
+An {{AppHistoryNavigateEvent}} has a <dfn for="AppHistoryNavigateEvent">scroll restoration behavior</dfn>, an {{AppHistoryScrollRestoration}}-or-null, initially null.
 
-An {{AppHistoryNavigateEvent}} also has an associated <dfn for="AppHistoryNavigateEvent">navigation action promises list</dfn>, which is a [=list=] of {{Promise}} objects, initially empty.
+An {{AppHistoryNavigateEvent}} has a <dfn for="AppHistoryNavigateEvent">navigation action promises list</dfn>, which is a [=list=] of {{Promise}} objects, initially empty.
 
 <div algorithm>
-  The <dfn method for="AppHistoryNavigateEvent">transitionWhile(|newNavigationAction|)</dfn> method steps are:
+  The <dfn method for="AppHistoryNavigateEvent">transitionWhile(|newNavigationAction|, |options|)</dfn> method steps are:
 
   1. If [=this=]'s [=relevant global object=]'s [=active Document=] is not [=Document/fully active=], then throw an "{{InvalidStateError}}" {{DOMException}}.
   1. If [=this=]'s {{Event/isTrusted}} attribute was initialized to false, then throw a "{{SecurityError}}" {{DOMException}}.
@@ -1125,6 +1159,12 @@ An {{AppHistoryNavigateEvent}} also has an associated <dfn for="AppHistoryNaviga
   1. If [=this=]'s [=Event/dispatch flag=] is unset, then throw an "{{InvalidStateError}}" {{DOMException}}.
   1. If [=this=]'s [=Event/canceled flag=] is set, then throw an "{{InvalidStateError}}" {{DOMException}}.
   1. [=list/Append=] |newNavigationAction| to [=this=]'s [=AppHistoryNavigateEvent/navigation action promises list=].
+  1. If |options|["{{AppHistoryTransitionWhileOptions/focusReset}}"] [=map/exists=], then:
+    1. If [=this=]'s [=AppHistoryNavigateEvent/focus reset behavior=] is not null, and it is not equal to |options|["{{AppHistoryTransitionWhileOptions/focusReset}}"], then the user agent may [=report a warning to the console=] indicating that the {{AppHistoryTransitionWhileOptions/focusReset}} option for a previous call to {{AppHistoryNavigateEvent/transitionWhile()}} was overridden by this new value, and the previous value will be ignored.
+    1. Set [=this=]'s [=AppHistoryNavigateEvent/focus reset behavior=] to |options|["{{AppHistoryTransitionWhileOptions/focusReset}}"].
+  1. If |options|["{{AppHistoryTransitionWhileOptions/scrollRestoration}}"] [=map/exists=], and [=this=]'s {{AppHistoryNavigateEvent/navigationType}} attribute was initialized to "{{AppHistoryNavigationType/traverse}}", then:
+    1. If [=this=]'s [=AppHistoryNavigateEvent/scroll restoration behavior=] is not null, and it is not equal to |options|["{{AppHistoryTransitionWhileOptions/scrollRestoration}}"], then the user agent may [=report a warning to the console=] indicating that the {{AppHistoryTransitionWhileOptions/scrollRestoration}} option for a previous call to {{AppHistoryNavigateEvent/transitionWhile()}} was overridden by this new value, and the previous value will be ignored.
+    1. Set [=this=]'s [=AppHistoryNavigateEvent/scroll restoration behavior=] to |options|["{{AppHistoryTransitionWhileOptions/scrollRestoration}}"].
 </div>
 
 <h3 id="navigate-event-destination">The {{AppHistoryDestination}} class</h3>
@@ -1281,6 +1321,8 @@ The <dfn attribute for="AppHistoryDestination">sameDocument</dfn> getter steps a
   1. Set |appHistory|'s [=AppHistory/ongoing navigate event=] to |event|.
   1. [=Assert=]: |appHistory|'s [=AppHistory/ongoing navigation signal=] is null.
   1. Set |appHistory|'s [=AppHistory/ongoing navigation signal=] to |event|'s {{AppHistoryNavigateEvent/signal}}.
+  1. Set |appHistory|'s [=AppHistory/focus changed during ongoing navigation=] to false.
+  1. Set |appHistory|'s [=AppHistory/suppress normal scroll restoration during ongoing navigation=] to false.
   1. Let |dispatchResult| be the result of [=dispatching=] |event| at |appHistory|.
   1. Set |appHistory|'s [=AppHistory/ongoing navigate event=] to null.
   1. If |dispatchResult| is false:
@@ -1295,6 +1337,8 @@ The <dfn attribute for="AppHistoryDestination">sameDocument</dfn> getter steps a
     1. Set |appHistory|'s [=AppHistory/transition=] to a [=new=] {{AppHistoryTransition}} created in |appHistory|'s [=relevant Realm=], whose [=AppHistoryTransition/navigation type=] is |navigationType|, [=AppHistoryTransition/from entry=] is |fromEntry|, and whose [=AppHistoryTransition/finished promise=] is [=a new promise=] created in |appHistory|'s [=relevant Realm=].
     1. Mark as handled |appHistory|'s [=AppHistory/transition=]'s [=AppHistoryTransition/finished promise=]. <!-- TODO: link once https://github.com/whatwg/webidl/pull/1090 is merged -->
       <p class="note">See <a href="#note-finished-promise-mark-as-handled">the discussion about other finished promises</a> as to why this is done.</p>
+    1. If |navigationType| is "{{AppHistoryNavigationType/traverse}}", then set |appHistory|'s [=AppHistory/suppress normal scroll restoration during ongoing navigation=] to true.
+       <p class="note">If |event|'s [=AppHistoryNavigateEvent/scroll restoration behavior=] was set to "{{AppHistoryScrollRestoration/after-transition}}", then we will [=potentially perform scroll restoration=] below. Otherwise, there will be no scroll restoration. That is, no navigation which is intercepted by {{AppHistoryNavigateEvent/transitionWhile()}} goes through the normal scroll restoration process; scroll restoration for such navigations is either done manually, by the web developer, or is done after the transition.
   1. If |endResultIsSameDocument| is true:
     1. Let |transition| be |appHistory|'s [=AppHistory/transition=].
     1. Let |tweakedPromisesList| be |event|'s  [=AppHistoryNavigateEvent/navigation action promises list=].
@@ -1306,12 +1350,16 @@ The <dfn attribute for="AppHistoryDestination">sameDocument</dfn> getter steps a
         1. If |transition| is not null, then [=resolve=] |transition|'s [=AppHistoryTransition/finished promise=] with undefined.
         1. If |appHistory|'s [=AppHistory/transition=] is |transition|, then set |appHistory|'s [=AppHistory/transition=] to null.
         1. If |ongoingNavigation| is non-null, then [=app history API navigation/resolve the finished promise=] for |ongoingNavigation|.
+        1. [=Potentially reset the focus=] given |appHistory| and |event|.
+        1. [=Potentially perform scroll restoration=] given TODO.
       and the following failure steps given reason |rejectionReason|:
         1. If |event|'s {{AppHistoryNavigateEvent/signal}} is [=AbortSignal/aborted=], then abort these steps.
         1. [=Fire an event=] named {{AppHistory/navigateerror}} at |appHistory| using {{ErrorEvent}}, with {{ErrorEvent/error}} initialized to |rejectionReason|, and {{ErrorEvent/message}}, {{ErrorEvent/filename}}, {{ErrorEvent/lineno}}, and {{ErrorEvent/colno}} initialized to appropriate values that can be extracted from |rejectionReason| in the same underspecified way the user agent typically does for the <a spec="HTML">report an exception</a> algorithm.
         1. If |transition| is not null, then [=reject=] |transition|'s [=AppHistoryTransition/finished promise=] with |rejectionReason|.
         1. If |appHistory|'s [=AppHistory/transition=] is |transition|, then set |appHistory|'s [=AppHistory/transition=] to null.
         1. If |ongoingNavigation| is non-null, then [=app history API navigation/reject the finished promise=] for |ongoingNavigation| with |rejectionReason|.
+        1. [=Potentially reset the focus=] given |appHistory| and |event|.
+           <p class="note">Although we still [=potentially reset the focus=] for such failed transitions, we do <em>not</em> [=potentially perform scroll restoration=] for them.
   1. Otherwise, if |ongoingNavigation| is non-null, then:
     1. Set |ongoingNavigation|'s [=app history API navigation/serialized state=] to null.
        <p class="note">This ensures that any call to {{AppHistory/navigate()|appHistory.navigate()}} which triggered this algorithm does not overwrite the [=session history entry/app history state=] of the [=session history/current entry=] for cross-document navigations.
@@ -1329,6 +1377,8 @@ The <dfn attribute for="AppHistoryDestination">sameDocument</dfn> getter steps a
 <div algorithm>
   To <dfn>finalize with an aborted navigation error</dfn> given an {{AppHistory}} |appHistory|, an [=app history API navigation=] or null |ongoingNavigation|, and an optional {{DOMException}} |error|:
 
+  1. Set |appHistory|'s [=AppHistory/focus changed during ongoing navigation=] to false.
+  1. Set |appHistory|'s [=AppHistory/suppress normal scroll restoration during ongoing navigation=] to false.
   1. If |error| was not given, then set |error| to a [=new=] "{{AbortError}}" {{DOMException}}, created in |appHistory|'s [=relevant Realm=].
   1. If |appHistory|'s [=AppHistory/ongoing navigate event=] is non-null, then:
     1. Set |appHistory|'s [=AppHistory/ongoing navigate event=]'s [=Event/canceled flag=] to true.
@@ -1362,6 +1412,25 @@ The <dfn attribute for="AppHistoryDestination">sameDocument</dfn> getter steps a
   1. Let |appHistory| be |bc|'s [=browsing context/active window=]'s [=Window/app history=].
   1. Let |traversals| be a [=list/clone=] of |appHistory|'s [=AppHistory/upcoming traverse navigations=].
   1. For each |traversal| of |traversals|: [=finalize with an aborted navigation error=] given |appHistory| and |traversal|.
+</div>
+
+<div algorithm>
+  To <dfn>potentially reset the focus</dfn> given an {{AppHistory}} object |appHistory| and an {{AppHistoryNavigateEvent}} |event|:
+
+  1. Let |focusChanged| be |appHistory|'s [=AppHistory/focus changed during ongoing navigation=].
+  1. Set |appHistory|'s [=AppHistory/focus changed during ongoing navigation=] to false.
+  1. If |event|'s [=AppHistoryNavigateEvent/focus reset behavior=] is "{{AppHistoryFocusReset/manual}}", then return.
+     <p class="note">If it was left as null, then we treat that was "{{AppHistoryFocusReset/after-transition}}", and continue onward.
+  1. If |focusChanged| is true, then return.
+  1. Let |document| be |appHistory|'s [=relevant global object=]'s [=associated Document=].
+  1. Let |focusTarget| be the <a spec="HTML">autofocus delegate</a> for |document|.
+  1. If |focusTarget| is null, then set |focusTarget| to |document|'s <a spec="HTML" lt="the body element">body element</a>.
+  1. If |focusTarget| is null, then set |focusTarget| to |document|'s [=document element=].
+  1. Run the <a spec="HTML">focusing steps</a> for |focusTarget|, with |document|'s <a spec="CSS2">viewport</a> as the fallback target.
+</div>
+
+<div algorithm>
+  To <dfn>potentially perform scroll restoration</dfn> given TODO...
 </div>
 
 <h2 id="apphistoryentry-class">App history entries</h2>
@@ -1738,6 +1807,22 @@ So, update the HTML Standard to always store the policy container on the [=sessi
 <p class="note">We do not [=AppHistory/update the entries=] when initially <a spec="HTML">creating a new browsing context</a>, as we intentionally don't want to include the initial `about:blank` {{Document}} in any app history entry list.
 
 <h2 id="other-patches">Other patches</h2>
+
+<h3 id="focus-patches">Focus tracking</h3>
+
+To support the {{AppHistoryTransitionWhileOptions/focusReset}} option, the following patches need to be made:
+
+Update the <a spec="HTML">focusing steps</a> to, right before they call the <a spec="HTML">focus update steps</a>, set the {{Document}}'s [=relevant global object=]'s [=Window/app history=]'s [=AppHistory/focus changed during ongoing navigation=] to true.
+
+Update the <a spec="HTML">focus fixup rule</a> to additionally set the {{Document}}'s [=relevant global object=]'s [=Window/app history=]'s [=AppHistory/focus changed during ongoing navigation=] to false.
+
+<p class="note">In combination, these ensure that the [=AppHistory/focus changed during ongoing navigation=] reflects any developer- or user-initiated focus changes, unless they were undone by the focus fixup rule. For example, if the user moved focus to an element which was removed from the DOM while the promise passed to {{AppHistoryNavigateEvent/transitionWhile()}} was settling, then that would not count as a focus change.
+
+<h3 id="scroll-restoration-patches">Scroll restoration</h3>
+
+To support the {{AppHistoryTransitionWhileOptions/scrollRestoration}} option, the following patches need to be made:
+
+Modify the <a spec="HTML">restore persisted state</a> algorithm's first step to not perform scroll restoration if <var ignore>entry</var>'s [=session history entry/document=]'s [=relevant global object=]'s [=Window/app history=]'s [=AppHistory/suppress normal scroll restoration during ongoing navigation=] is true.
 
 <h3 id="cancel-navigation">Canceling navigation and traversals</h3>
 
